@@ -16,20 +16,21 @@ window.PORTFOLIO = {
     "email": "s1an011109@gmail.com",
     "keywords": [],
     "headline": [
-      "만든 것을 사람들이 즐기는\n순간이 좋아 게임을 만듭니다."
+      "기획 의도를 기준으로 여러 방법을 비교하고, \n더 적합한 방향을 찾습니다."
     ],
-    "intro": "보드게임의 콘셉트와 규칙을 기획하고\n**제작부터 배송까지 맡아 516명의 후원자에게 전달했습니다.**\n\n「카오스 제로 나이트메어」에서는 \n**캐릭터의 감정을 보여주는 연출을 제안해 반영했습니다.**",
+    "intro": "의도를 생각하기 전에 가야 할 목표를 확실히 합니다. 이를 위한",
     "links": [],
     "topLabel": "Portfolio of",
     "heroLayers": [
       {
         "src": "assets/mwiwfhlh6nx-23754b1e-1f61-4348-91c5-0059a5.png",
-        "x": 59.92,
-        "y": 66.1,
+        "x": 63.19,
+        "y": 64.43,
         "w": 66,
         "o": 100
       }
-    ]
+    ],
+    "heroBg": "#f0f0ef"
   },
   "glance": [
     {
@@ -368,9 +369,15 @@ window.PORTFOLIO = {
         "src": "assets/mvoye7gakrh-1732259293255.png"
       },
       "slidePeriod": "2024",
-      "slideRole": "NPC 노아 콘텐츠 기획",
+      "slideRole": "청강문화산업대학교 졸업작품",
       "slideTitle": "LUKA: AZURE FIELD",
-      "slideLine": "전투 없는 RPG에서 꽃 수집을 NPC 강화 보상으로 연결하는 콘텐츠를 기획했습니다."
+      "slideLine": "전투 없는 RPG에서 꽃 수집을 NPC 강화 보상으로 연결하는 콘텐츠를 기획했습니다.",
+      "factLabels": {
+        "role": "역할",
+        "period": "기간",
+        "team": "구성",
+        "status": "상태"
+      }
     },
     {
       "id": "voice",
@@ -663,6 +670,10 @@ window.PORTFOLIO = {
       "x": 21.81,
       "y": 2.26,
       "z": 0.8
+    },
+    "note": {
+      "x": -0.8,
+      "y": -2.14
     }
   },
   "about": {
