@@ -1,0 +1,863 @@
+(function () {
+  "use strict";
+  const D = window.PORTFOLIO;
+  if (!D || !D.meta) {
+    document.body.insertAdjacentHTML("afterbegin", `<p class="load-error">내용 파일(content.js)을 불러오지 못했어요. 새로고침(Ctrl+F5) 해 주세요.</p>`);
+    return;
+  }
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* 편집 모드(editor.js)와 공유하는 객체 */
+  const PF = window.PF = { editing: false, blobs: {}, onRender: null };
+  let glOpen = null; // 게임 로그에서 열려 있는 카드 번호
+
+  /* ⟪…⟫ 는 아직 채우지 않은 자리 → 형광펜으로 표시 */
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  /* 글 안 꾸미기: **굵게**, `코드`, [글자](주소) */
+  /* 글자색: {빨강:글자} · 형광펜: ==글자== */
+  const COLORS = { 빨강: "red", 주황: "orange", 노랑: "yellow", 초록: "green", 파랑: "blue", 보라: "purple", 회색: "gray" };
+  PF.COLORS = COLORS;
+  const colorize = (h) => h
+    .replace(/\{(빨강|주황|노랑|초록|파랑|보라|회색):([^{}\n]+?)\}/g, (_, c, t) => `<span class="c-${COLORS[c]}">${t}</span>`)
+    .replace(/==([^=\n]+?)==/g, '<mark class="hl">$1</mark>');
+  const inline = (h) => colorize(h)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+?)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+?)\]\(((?:https?:\/\/|assets\/|#)[^)\s]*)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const fmt = (s) => inline(esc(s).replace(/⟪(.*?)⟫/g, (_, t) => `<mark class="todo">${t || "채울 내용"}</mark>`));
+  /* 마크다운 → HTML (marked + DOMPurify, 못 불러오면 기본 꾸미기만) */
+  const md = (s) => {
+    const raw = String(s ?? "");
+    if (!raw.trim()) return "";
+    if (!window.marked || !window.DOMPurify) return fmt(raw).replace(/\n/g, "<br>");
+    const pre = colorize(raw.replace(/⟪(.*?)⟫/g, (_, t) => `<mark class="todo">${esc(t || "채울 내용")}</mark>`));
+    let html = window.marked.parse(pre, { gfm: true, breaks: true });
+    html = window.DOMPurify.sanitize(html, { ADD_ATTR: ["target"] });
+    // 태그 사이 줄바꿈 제거 — 편집 칸(contenteditable)에서는 이 줄바꿈이 빈 줄로 보여 간격이 커짐
+    return html
+      .replace(/>\n+(?=<)/g, ">")
+      .replace(/<a /g, '<a target="_blank" rel="noopener" ')
+      .replace(/<img ([^>]*?)src="([^"]+)"/g, (m, pre2, u) => `<img loading="lazy" ${pre2}src="${PF.blobs[u] || u}"`);
+  };
+  /* 유튜브 주소 → 영상 ID */
+  const ytId = (u) => { const m = String(u || "").match(/(?:youtu\.be\/|v=|shorts\/|embed\/)([\w-]{11})/); return m ? m[1] : (/^[\w-]{11}$/.test(u || "") ? u : ""); };
+  const ytThumb = (id) => `<img src="https://i.ytimg.com/vi/${id}/maxresdefault.jpg" alt="" loading="lazy" onerror="if(!this.dataset.f){this.dataset.f=1;this.src='https://i.ytimg.com/vi/${id}/hqdefault.jpg'}"><button type="button" class="yt-play" data-yt="${id}" aria-label="영상 재생"><span>▶</span></button>`;
+  const plain = (s) => String(s ?? "").replace(/[⟪⟫]/g, "");
+  const get = (path) => path.split(".").reduce((o, k) => (o == null ? o : o[k]), D);
+  const show = (path) => fmt(get(path));
+  const E = (path) => `data-path="${path}"`;
+  const tags = (path) => `<span class="tags-wrap" data-list="${path}">${(get(path) || []).map((t, i) => `<span class="tag" ${E(`${path}.${i}`)}>${fmt(t)}</span>`).join("")}</span>`;
+  const href = (path) => `href="${esc(PF.blobs[get(path)] || get(path) || "#")}" data-href="${path}"`;
+  Object.assign(PF, { get, fmt, plain, esc, md });
+
+  /* ---------- 미디어 (영상 / 이미지 / 슬라이드 / 자리표시) ---------- */
+  const mediaIO = new IntersectionObserver((entries) => {
+    entries.forEach((e) => setPlaying(e.target, e.isIntersecting && e.intersectionRatio >= 0.35));
+  }, { threshold: [0, 0.35, 0.7] });
+  const src = (s) => esc(PF.blobs[s] || s);
+
+  function makeMedia(m, label, path, gallery) {
+    const box = document.createElement("div");
+    box.className = "media";
+    if (path) box.dataset.mediaPath = path;
+    if (!m || !m.src || (Array.isArray(m.src) && !m.src.length)) {
+      box.classList.add("ph", "paused");
+      box.innerHTML = `<span>${esc(label || "영상, 이미지 자리")}</span>`;
+    } else if (m.type === "video") {
+      const v = document.createElement("video");
+      v.muted = true; v.loop = true; v.playsInline = true; v.preload = "none";
+      v.setAttribute("muted", ""); v.setAttribute("playsinline", "");
+      if (m.poster) v.poster = PF.blobs[m.poster] || m.poster;
+      v.dataset.src = PF.blobs[m.src] || m.src;
+      box.appendChild(v);
+    } else if (m.type === "youtube") {
+      const id = ytId(m.src);
+      box.classList.add("yt");
+      box.innerHTML = id ? ytThumb(id) : `<span>유튜브 주소를 확인해 주세요</span>`;
+    } else if (m.type === "images" && gallery) {
+      box.classList.add("gallery", "n" + Math.min(m.src.length, 4));
+      box.innerHTML = m.src.map((s) => `<img src="${src(s)}" alt="" loading="lazy">`).join("");
+    } else if (m.type === "images") {
+      box.classList.add("slides");
+      box.innerHTML = m.src.map((s, i) => `<img src="${src(s)}" alt="" loading="lazy" class="${i ? "" : "on"}">`).join("");
+    } else {
+      box.innerHTML = `<img src="${src(m.src)}" alt="" loading="lazy">`;
+    }
+    mediaIO.observe(box);
+    return box;
+  }
+  PF.makeMedia = makeMedia;
+  /* 그림이 불러와지면 가로형/세로형 표시 (load 는 버블링되지 않아 capture) */
+  document.addEventListener("load", (e) => {
+    const im = e.target;
+    if (im.tagName !== "IMG" || !im.naturalWidth) return;
+    const box = im.closest(".media");
+    if (box) box.classList.toggle("land", im.naturalWidth >= im.naturalHeight * 1.05);
+  }, true);
+
+  function setPlaying(box, on) {
+    if (reduceMotion) on = false;
+    const holder = box.closest(".card-media");
+    if (box.classList.contains("ph")) {
+      box.classList.toggle("paused", !on);
+      return;
+    }
+    const v = $("video", box);
+    if (v) {
+      if (on) {
+        if (!v.src) v.src = v.dataset.src;
+        v.play().then(() => holder && holder.classList.add("playing")).catch(() => {});
+      } else {
+        v.pause();
+        holder && holder.classList.remove("playing");
+      }
+      return;
+    }
+    if (box.classList.contains("slides")) {
+      clearInterval(box._t);
+      if (on) {
+        box._t = setInterval(() => {
+          const imgs = $$("img", box), i = imgs.findIndex((x) => x.classList.contains("on"));
+          imgs[i].classList.remove("on");
+          imgs[(i + 1) % imgs.length].classList.add("on");
+        }, 2200);
+      }
+    }
+  }
+
+  /* 글 · 그림 블록 (프로젝트 상세, 자유 섹션, About Me)
+     h2 큰 제목 · h 소제목 · p 글 · lp 라벨 글 · ul 목록 · img 그림/영상(여러 장=갤러리)
+     yt 유튜브 · table 표 · fold 접기 · quote 강조 상자 · hr 구분선 · btn 링크 버튼 */
+  /* 아직 채우지 않은 자리(⟪ ⟫)는 편집 모드에서만 보이고, 방문자 화면에서는 숨김 */
+  const hasTodo = (s) => /⟪/.test(String(s ?? ""));
+  const viewText = (s, ed) => (ed ? s : String(s ?? "").replace(/\s*[\/·,]?\s*⟪[^⟫]*⟫/g, ""));
+  function hiddenBlocks(list) {
+    const hide = new Set();
+    const txt = (b) => [b.text, b.label, b.summary, (b.lines || []).join(" "), (b.rows || []).map((r) => r.join(" ")).join(" ")].filter(Boolean).join(" ");
+    const isHead = (b) => b.type === "h2" || b.type === "h";
+    const isBody = (b) => !isHead(b) && b.type !== "hr";
+    let any = false;
+    list.forEach((b, i) => {
+      if (hasTodo(txt(b))) { hide.add(i); any = true; }
+      else if (b.type === "p" && !String(b.text || "").trim()) hide.add(i);
+    });
+    if (!any) return hide;
+    // 내용이 모두 숨겨져 제목만 남은 소제목도 함께 숨김
+    list.forEach((b, i) => {
+      if (!isHead(b) || hide.has(i)) return;
+      let ok = false;
+      for (let k = i + 1; k < list.length; k++) {
+        const n = list[k];
+        if (n.type === "h2" || (b.type === "h" && n.type === "h")) break;
+        if (isBody(n) && !hide.has(k)) { ok = true; break; }
+      }
+      if (!ok) hide.add(i);
+    });
+    return hide;
+  }
+  function blocks(path) {
+    const list = get(path) || [];
+    const ed = PF.editing;
+    const hide = ed ? new Set() : hiddenBlocks(list);
+    return `<div class="blocks" data-list="${path}">${list.map((b, i) => {
+      if (hide.has(i)) return "";
+      const p = `${path}.${i}`;
+      return tone(one(b, p), p, b.tone);
+    }).join("")}</div>`;
+  }
+  /* 블록 색: 블록 바깥 요소에 data-tone */
+  const tone = (html, p, c) => (c ? html.replace(`data-item="${p}"`, `data-item="${p}" data-tone="${esc(c)}"`) : html);
+  /* 목차에 보일 짧은 이름 (편집 모드에서만 칸이 보임) */
+  const tocChip = (b, p) => (PF.editing ? `<div class="b-toc-ed mono" title="비워 두면 목차에서 빠집니다 (목차 이름을 하나라도 정하면, 이름 있는 제목만 목차에 나옵니다)"><span>목차 이름</span><i ${E(p + ".toc")}>${fmt(b.toc || "")}</i></div>` : "");
+  function one(b, p) {
+    const ed = PF.editing, t = (k) => `${E(`${p}.${k}`)}>${fmt(b[k])}`;
+    {
+      switch (b.type) {
+        case "h2": return `<div class="b-txt" data-item="${p}" data-toc="${esc(b.toc || "")}">${tocChip(b, p)}<h3 class="b-h2" ${t("text")}</h3></div>`;
+        case "h": return `<div class="b-txt" data-item="${p}" data-toc="${esc(b.toc || "")}">${tocChip(b, p)}<h4 class="b-h" ${t("text")}</h4></div>`;
+        case "p": return `<div class="b-txt" data-item="${p}"><div class="b-p b-md" data-md ${E(p + ".text")}>${md(b.text)}</div></div>`;
+        case "lp": return `<div class="b-txt" data-item="${p}"><p class="b-p b-lp"><strong class="b-lab" ${t("label")}</strong><span ${t("text")}</span></p></div>`;
+        case "ul": return `<div class="b-txt" data-item="${p}"><ul class="b-ul" data-list="${p}.lines">${(b.lines || []).map((x, k) => `<li ${E(`${p}.lines.${k}`)}>${fmt(x)}</li>`).join("")}</ul></div>`;
+        case "quote": return `<div class="b-txt" data-item="${p}"><div class="b-quote b-md" data-md ${E(p + ".text")}>${md(b.text)}</div></div>`;
+        case "hr": return `<div class="b-hr" data-item="${p}"><hr></div>`;
+        case "btn": return `<div class="b-txt" data-item="${p}"><a class="b-btn" ${href(p + ".url")} target="_blank" rel="noopener"><span ${t("label")}</span> ↗</a></div>`;
+        case "fold": return `<div class="b-txt" data-item="${p}"><details class="b-fold" ${ed ? "open" : ""}><summary><span ${t("summary")}</span></summary>
+            ${b.code ? `<div class="b-fold-body code" ${t("text")}</div>` : `<div class="b-fold-body b-md" data-md ${E(p + ".text")}>${md(b.text)}</div>`}</details></div>`;
+        case "table": {
+          const rows = b.rows || [];
+          return `<div class="b-txt" data-item="${p}"><div class="b-table-wrap"><table class="b-table">${rows.map((r, ri) => `<tr>${r.map((c, ci) => {
+            const tag = b.head && ri === 0 ? "th" : "td";
+            return `<${tag} ${E(`${p}.rows.${ri}.${ci}`)}>${fmt(c)}</${tag}>`;
+          }).join("")}</tr>`).join("")}</table></div></div>`;
+        }
+        case "yt": {
+          const id = ytId(b.url);
+          return `<figure class="b-fig wide" data-item="${p}"><div class="b-media b-yt" data-href="${p}.url">${id ? `<div class="media yt">${ytThumb(id)}</div>` : `<div class="media ph"><span>유튜브 주소를 넣어 주세요 (🔗)</span></div>`}</div>
+            ${b.caption || ed ? `<figcaption ${t("caption")}</figcaption>` : ""}</figure>`;
+        }
+        default: return `<figure class="b-fig ${b.wide ? "wide" : ""}" data-item="${p}"><div class="b-media ${b.media && b.media.type === "images" ? "is-gallery" : ""}" data-slot="${p}.media" data-gallery></div>
+            ${b.caption || ed ? `<figcaption ${t("caption")}</figcaption>` : ""}</figure>`;
+      }
+    }
+  }
+  const fillSlots = (root) => $$("[data-slot]", root).forEach((s) => s.appendChild(makeMedia(get(s.dataset.slot), "그림, 영상 자리", s.dataset.slot, s.hasAttribute("data-gallery"))));
+
+  /* 유튜브 썸네일을 누르면 그 자리에서 재생 (카드·슬라이드 안에서는 상세 열기) */
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".yt-play");
+    if (!b || PF.editing || b.closest("[data-work]")) return;
+    e.preventDefault(); e.stopPropagation();
+    b.parentElement.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${b.dataset.yt}?rel=0" title="YouTube 영상" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
+  });
+
+  /* ---------- 화면 그리기 (편집 후 다시 호출됨) ---------- */
+  function render() {
+    try { applyUI(); } catch (e) { console.error("[레이아웃·글꼴] 적용 실패", e); }
+    try {
+      $$("[data-bind]").forEach((el) => { el.dataset.path = "meta." + el.dataset.bind; el.innerHTML = show(el.dataset.path); });
+      document.title = `${plain(D.meta.name)} — ${plain(D.meta.role)} Portfolio`;
+      const art = $("#heroArt");
+      art.dataset.cover = "meta.heroImage";
+      art.innerHTML = D.meta.heroImage ? `<img src="${src(D.meta.heroImage)}" alt="" fetchpriority="high" decoding="async">` : "";
+      document.body.classList.toggle("has-art", !!D.meta.heroImage);
+      applyLayout();
+      $("#headline").dataset.list = "meta.headline";
+      $("#headline").innerHTML = D.meta.headline.map((l, i) =>
+        `<span class="line"><span style="animation-delay:${0.1 + i * 0.12}s" ${E("meta.headline." + i)} data-em>${fmt(l).replace(/\*(.+?)\*/g, "<em>$1</em>")}</span></span>`).join("");
+      $("#keywords").dataset.list = "meta.keywords";
+      $("#keywords").innerHTML = D.meta.keywords.map((k, i) => `<li ${E("meta.keywords." + i)}>${fmt(k)}</li>`).join("");
+    } catch (e) { console.error("[첫 화면 글자] 그리기 실패", e); }
+    try {
+      /* About Me (맨 끝): 사진 · 자유 글/그림 블록 · 한눈 정보 · 연락처 */
+      const ab = D.about;
+      if (ab && $("#aboutBody")) {
+        const t = $("#aboutTitle");
+        if (t) { t.dataset.path = "about.title"; t.innerHTML = fmt(ab.title); }
+        ab.blocks = ab.blocks || [];
+        ab.facts = ab.facts || [];
+        $("#aboutBody").classList.add("no-photo");
+        $("#aboutBody").innerHTML = `
+          <div class="about-main">
+            ${blocks("about.blocks")}
+          </div>`;
+        fillSlots($("#aboutBody"));
+        const tg = $("#aboutTags");
+        if (tg) tg.innerHTML = (D.meta.keywords || []).map((k, i) => `<li ${E("meta.keywords." + i)}>${fmt(k)}</li>`).join("");
+      }
+
+    } catch (e) { console.error("[About Me] 그리기 실패", e); }
+    try {
+      /* ★ 켠 프로젝트 = 첫 화면 슬라이드 */
+      const featured = D.works.map((w, j) => [w, j]).filter(([w]) => w.featured);
+      // 슬라이드 설명은 카드 설명(oneLine)과 따로 관리: 처음엔 카드 설명의 첫 줄만 가져와 겹침을 줄임
+      D.works.forEach((w) => {
+        // 슬라이드의 기간·역할·제목도 카드와 따로 관리 (처음엔 같은 글을 복사)
+        if (w.slidePeriod === undefined) w.slidePeriod = w.period || "";
+        if (w.slideRole === undefined) w.slideRole = w.role || "";
+        if (w.slideTitle === undefined) w.slideTitle = w.title || "";
+      });
+      D.works.forEach((w) => { if (w.slideLine === undefined) w.slideLine = String(w.oneLine || "").split("\n")[0].trim(); });
+
+      /* 첫 화면 대표 프로젝트 슬라이드 (★ 대표작이 순서대로) */
+      const sc = $("#showcase");
+      if (scIndex >= featured.length) scIndex = 0;
+      sc.innerHTML = featured.length ? `
+        <div class="sc-frame"><div class="sc-stage">${featured.map(([w, j], i) => `
+          <div class="sc-slide ${i === scIndex ? "on" : ""}" role="link" tabindex="${i === scIndex ? 0 : -1}" aria-label="${esc(plain(w.title))} 자세히 보기" data-work="${j}" data-slot="works.${j}.media"></div>`).join("")}
+          <span class="sc-go mono">자세히 보기 ↗</span>
+        </div>
+          ${featured.length > 1 ? `<button type="button" class="sc-arrow prev" data-sc-step="-1" aria-label="이전 프로젝트">‹</button><button type="button" class="sc-arrow next" data-sc-step="1" aria-label="다음 프로젝트">›</button>` : ""}
+        </div>
+        <div class="sc-cap">
+          ${featured.map(([w, j], i) => `
+            <div class="sc-text ${i === scIndex ? "on" : ""}" data-work="${j}">
+              <p class="sc-meta mono"><span ${E(`works.${j}.slidePeriod`)}>${fmt(w.slidePeriod)}</span> / <span ${E(`works.${j}.slideRole`)}>${fmt(w.slideRole)}</span></p>
+              <h2 class="sc-title" ${E(`works.${j}.slideTitle`)}>${fmt(w.slideTitle)}</h2>
+              <p class="sc-one" ${E(`works.${j}.slideLine`)}>${fmt(w.slideLine)}</p>
+            </div>`).join("")}
+          <div class="sc-dots" role="tablist">${featured.map(([w], i) => `<button type="button" role="tab" aria-selected="${i === scIndex}" aria-label="${i + 1}번째: ${esc(plain(w.title))}" data-sc="${i}"><i></i></button>`).join("")}</div>
+        </div>` : `<div class="sc-empty">프로젝트 카드의 ★을 켜면 여기에 슬라이드로 나옵니다.</div>`;
+      $$(".sc-slide", sc).forEach((s) => s.appendChild(makeMedia(get(s.dataset.slot), plain(D.works[+s.dataset.work].title), s.dataset.slot)));
+      restartSlides();
+
+    } catch (e) { console.error("[첫 화면 슬라이드] 그리기 실패", e); }
+    try {
+      /* 포트폴리오 파일 (우측 아래 떠 있는 버튼) */
+      $("#dockTray").innerHTML = fileKinds.map(([k, name]) => {
+        const f = D.files[k];
+        return `<a class="tray-item is-${k}" href="${esc(f.url)}" target="_blank" rel="noopener">
+          <span class="tray-ico">${fmt(f.pages)}p</span>
+          <span><b>${name}</b><small>${fmt(f.teaser)}</small></span>
+          <span class="go">↗</span></a>`;
+      }).join("") + `<div class="tray-foot mono"><span>PDF</span><span><a href="${esc(D.files.summary.pdf)}">요약본</a> / <a href="${esc(D.files.detail.pdf)}">상세본</a></span></div>`;
+
+    } catch (e) { console.error("[파일] 그리기 실패", e); }
+    try {
+      /* 프로젝트 카드 — 첫 카드는 크게, 그림 없는 카드는 글 중심으로 */
+      const hasMedia = (m) => !!(m && m.src && (!Array.isArray(m.src) || m.src.length));
+      const ed = PF.editing;
+      $("#projectCards").dataset.list = "works";
+      $("#projectCards").innerHTML = D.works.map((w, j) => {
+        // 카드 그림은 슬라이드·상세 그림과 따로 관리: 처음엔 같은 그림을 복사해 두고 그 뒤로는 독립
+        if (w.cardMedia === undefined) w.cardMedia = w.media ? JSON.parse(JSON.stringify(w.media)) : null;
+        const media = hasMedia(w.cardMedia) || ed;
+        return `
+        <div class="card reveal ${media ? "" : "no-media"}" role="button" tabindex="0" data-work="${j}" data-item="works.${j}">
+          ${media ? `<div class="card-media" data-slot="works.${j}.cardMedia"><span class="card-status" ${E(`works.${j}.status`)}>${fmt(w.status)}</span><span class="card-play mono">PLAYING</span></div>` : ""}
+          <div class="card-body">
+            ${media ? "" : `<span class="card-status" ${E(`works.${j}.status`)}>${fmt(w.status)}</span>`}
+            <div class="card-top mono"><span ${E(`works.${j}.period`)}>${fmt(w.period)}</span><span ${E(`works.${j}.team`)}>${fmt(w.team)}</span></div>
+            <h3 ${E(`works.${j}.title`)}>${fmt(w.title)}</h3>
+            <p class="one" ${E(`works.${j}.oneLine`)}>${fmt(w.oneLine)}</p>
+            <div class="tags">${tags(`works.${j}.tags`)}</div>
+            <span class="card-more">자세히 보기 →</span>
+          </div>
+        </div>`;
+      }).join("");
+      $$("#projectCards .card-media").forEach((cm) => {
+        const j = +cm.closest("[data-work]").dataset.work;
+        cm.prepend(makeMedia(D.works[j].cardMedia, plain(D.works[j].title), `works.${j}.cardMedia`));
+      });
+
+    } catch (e) { console.error("[프로젝트 카드] 그리기 실패", e); }
+    try {
+      /* 게임 로그 — 앱 아이콘 격자. 아이콘을 누르면 정보 카드가 뜨고, 나머지 아이콘은 어두워짐 */
+      const ed = PF.editing;
+      const filled = (v) => plain(v).trim() !== "";
+      $("#logCards").dataset.list = "gameLogs";
+      $("#logCards").innerHTML = D.gameLogs.map((g, i) => {
+        const p = `gameLogs.${i}`;
+        const hasImg = !!(g.media && g.media.src);
+        const stats = (g.stats || []).slice(0, 3).map((s, k) => [s, k]).filter(([s]) => ed || filled(s.value));
+        const meta = [["platform", g.platform], ["genre", g.genre], ["period", g.period]].filter(([, v]) => ed || filled(v));
+        return `
+        <article class="gl-item" data-genre="${esc(plain(g.genre))}" data-item="${p}" data-i="${i}">
+          <div class="gl-icon" role="button" tabindex="0" aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(plain(g.title))} 정보 보기" ${hasImg || ed ? `data-slot="${p}.media"` : ""}>${hasImg || ed ? "" : `<span class="gl-fallback">${esc(plain(g.title))}</span>`}</div>
+          ${ed ? `<button type="button" class="gl-edit" title="내용 고치기 (카드 열기)" aria-label="내용 고치기">✎</button>` : ""}
+          <div class="gl-pop" role="dialog" aria-label="${esc(plain(g.title))}">
+            <h3 ${E(p + ".title")}>${fmt(g.title)}</h3>
+            ${meta.length ? `<p class="gl-meta">${meta.map(([k, v]) => `<span ${E(`${p}.${k}`)}>${fmt(v)}</span>`).join("")}</p>` : ""}
+            ${stats.length ? `<dl class="gl-stats">${stats.map(([s, k]) => `<div><dt ${E(`${p}.stats.${k}.label`)}>${fmt(s.label)}</dt><dd ${E(`${p}.stats.${k}.value`)}>${fmt(s.value)}</dd></div>`).join("")}</dl>` : ""}
+            ${ed || filled(g.insight) ? `<div class="gl-note"><span class="gl-note-l">인사이트</span><p ${E(p + ".insight")}>${fmt(g.insight)}</p></div>` : ""}
+            ${ed || (g.tags || []).length ? `<div class="tags">${tags(`${p}.tags`)}</div>` : ""}
+          </div>
+        </article>`;
+      }).join("");
+      $$("#logCards .gl-icon[data-slot]").forEach((ic) => {
+        const i = +ic.closest("[data-item]").dataset.item.split(".")[1];
+        ic.prepend(makeMedia(D.gameLogs[i].media, plain(D.gameLogs[i].title), `gameLogs.${i}.media`));
+      });
+
+      const genres = ["전체", ...new Set(D.gameLogs.map((g) => plain(g.genre).trim()).filter(Boolean))];
+      $("#logFilter").innerHTML = genres.map((g, i) => `<button type="button" aria-pressed="${i === 0}">${esc(g)}</button>`).join("");
+      glSet(glOpen != null && D.gameLogs[glOpen] ? glOpen : null); // 다시 그려도 열어 둔 카드 유지
+
+    } catch (e) { console.error("[게임 로그] 그리기 실패", e); }
+    try {
+      /* 자유 섹션 */
+      D.sections = D.sections || [];
+      $("#customSections").dataset.list = "sections";
+      $("#customSections").innerHTML = D.sections.map((s, i) => `
+        <section class="sec shell" id="sec-${i}" data-item="sections.${i}">
+          <div class="sec-head reveal">
+            <span class="sec-idx mono" ${E(`sections.${i}.idx`)}>${fmt(s.idx)}</span>
+            <h2 ${E(`sections.${i}.title`)}>${fmt(s.title)}</h2>
+            ${s.sub || PF.editing ? `<p class="sec-sub" ${E(`sections.${i}.sub`)}>${fmt(s.sub)}</p>` : ""}
+          </div>
+          ${blocks(`sections.${i}.blocks`)}
+        </section>`).join("");
+      fillSlots($("#customSections"));
+
+    } catch (e) { console.error("[자유 섹션] 그리기 실패", e); }
+    try {
+      /* 이력 — 왼쪽 프로필 카드(사진 · 이름) + 오른쪽 항목들 */
+      const rp = $("#resumePhoto");
+      if (rp) {
+        const ph = D.about && D.about.photo;
+        rp.classList.toggle("empty", !ph && !PF.editing);
+        rp.dataset.slot = "about.photo";
+        rp.innerHTML = "";
+        if (ph || PF.editing) rp.appendChild(makeMedia(ph, "프로필 사진", "about.photo"));
+      }
+      const ri = $("#resumeId");
+      if (ri) ri.innerHTML = `
+        <b class="rs-name" ${E("meta.name")}>${fmt(D.meta.name)}</b>
+        <span class="rs-en" ${E("meta.nameEn")}>${fmt(D.meta.nameEn)}</span>
+        <span class="rs-role" ${E("meta.role")}>${fmt(D.meta.role)}</span>
+        ${PF.editing || plain(D.meta.email).trim() ? `<p class="rs-mail"><span class="mono">E-mail</span> <span ${E("meta.email")}>${fmt(D.meta.email)}</span></p>` : ""}`;
+      $("#resumeList").dataset.list = "resume";
+      $("#resumeList").innerHTML = D.resume.map((g, gi) => `
+        <div class="resume-group reveal" data-item="resume.${gi}">
+          <h3 ${E(`resume.${gi}.group`)}>${fmt(g.group)}</h3>
+          <ol data-list="resume.${gi}.items">${g.items.map((it, i) => { const p = `resume.${gi}.items.${i}`; return `
+            <li class="resume-item" data-item="${p}">
+              <span class="mono" ${E(p + ".period")}>${fmt(it.period)}</span>
+              <div><b ${E(p + ".title")}>${fmt(it.title)}</b>${it.badge || PF.editing ? `<span class="badge" ${E(p + ".badge")}>${fmt(it.badge)}</span>` : ""}<p ${E(p + ".desc")}>${fmt(it.desc)}</p></div>
+            </li>`; }).join("")}</ol>
+        </div>`).join("");
+
+    } catch (e) { console.error("[이력] 그리기 실패", e); }
+    observeReveals();
+    if (modal.open && current != null) openWork(current, true);
+    else if (PF.onRender) PF.onRender();
+  }
+  PF.render = render;
+
+  const fileKinds = [["summary", "요약 포트폴리오", "SUMMARY"], ["detail", "상세 포트폴리오", "DETAIL"]];
+
+  /* 첫 화면 배치 (편집 모드에서 끌어서 정한 위치 · 크기). PC 화면(1025px 이상)에만 적용 */
+  const MOVABLE = { name: ".hero-name", showcase: "#showcase", note: ".hero-note", art: "#heroArt" };
+  function applyLayout() {
+    const L = D.layout || {};
+    for (const [key, sel] of Object.entries(MOVABLE)) {
+      const el = $(sel), v = L[key] || {};
+      if (!el) continue;
+      el.dataset.move = key;
+      const css = key === "art"
+        ? { "--ax": v.x ? v.x + "%" : "", "--ay": v.y ? v.y + "%" : "", "--az": v.z || "" }
+        : { "--dx": v.x ? v.x + "vw" : "", "--dy": v.y ? v.y + "vw" : "", "--w": v.w ? v.w + "%" : "", "--s": v.s || "" };
+      for (const [k, val] of Object.entries(css)) val === "" ? el.style.removeProperty(k) : el.style.setProperty(k, val);
+    }
+  }
+  PF.applyLayout = applyLayout;
+
+  /* ---------- 섹션 배치 · 고정 문구 · 메뉴 · 글꼴 (편집 모드 '레이아웃' / '글꼴' 패널) ---------- */
+  const SEC_NAMES = { projects: "프로젝트", gamelog: "게임 로그", custom: "자유 섹션", resume: "이력" };
+  const NAV_DEFAULT = { projects: "프로젝트", gamelog: "게임 로그", resume: "이력" };
+  const headDefaults = {};
+  $$("[data-head]").forEach((h) => {
+    const id = h.dataset.head, idx = $(".sec-idx", h), h2 = $("h2", h), sub = $(".sec-sub", h);
+    headDefaults[id] = {
+      idx: idx ? idx.textContent.trim() : "",
+      title: h2 && id !== "about" ? h2.innerHTML.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim() : "",
+      sub: sub ? sub.textContent.trim() : ""
+    };
+  });
+  PF.SEC_NAMES = SEC_NAMES;
+
+  const FONTS = {
+    "Pretendard": null,
+    "Noto Sans KR": "Noto+Sans+KR:wght@400;500;700;800",
+    "Gothic A1": "Gothic+A1:wght@400;500;700;800",
+    "IBM Plex Sans KR": "IBM+Plex+Sans+KR:wght@400;500;700",
+    "Nanum Gothic": "Nanum+Gothic:wght@400;700;800",
+    "Gowun Dodum": "Gowun+Dodum",
+    "Sunflower": "Sunflower:wght@300;500;700",
+    "Noto Serif KR": "Noto+Serif+KR:wght@400;600;700;900",
+    "Nanum Myeongjo": "Nanum+Myeongjo:wght@400;700;800",
+    "Gowun Batang": "Gowun+Batang:wght@400;700",
+    "Hahmlet": "Hahmlet:wght@400;600;800",
+    "Black Han Sans": "Black+Han+Sans",
+    "Do Hyeon": "Do+Hyeon",
+    "Jua": "Jua",
+    "JetBrains Mono": null,
+    "IBM Plex Mono": "IBM+Plex+Mono:wght@400;500",
+    "Nanum Gothic Coding": "Nanum+Gothic+Coding:wght@400;700"
+  };
+  PF.FONTS = FONTS;
+  const loadedFonts = new Set();
+  const ensureFont = (name) => {
+    const q = FONTS[name];
+    if (!q || loadedFonts.has(name)) return;
+    loadedFonts.add(name);
+    const l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = `https://fonts.googleapis.com/css2?family=${q}&display=swap`;
+    document.head.appendChild(l);
+  };
+  const BASE_FONT = '"Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif';
+  const fontStack = (name, mono) => (!name || name === "Pretendard") ? (mono ? "" : BASE_FONT) : `"${name}", ${mono ? 'ui-monospace, Menlo, Consolas, monospace' : BASE_FONT}`;
+
+  function applyUI() {
+    D.ui = D.ui || {};
+    const U = D.ui;
+    U.sec = U.sec || {};
+    D.meta.topLabel = D.meta.topLabel ?? "Portfolio of";
+    const main = $("main"), ed = PF.editing;
+    const ids = $$("[data-sec]").map((el) => el.dataset.sec);
+    // 순서: 저장된 순서 + 새로 생긴 섹션은 뒤에
+    U.order = (U.order || []).filter((id) => ids.includes(id));
+    ids.forEach((id) => { if (!U.order.includes(id)) U.order.push(id); });
+    U.order.forEach((id) => { const el = $(`[data-sec="${id}"]`); if (el) main.appendChild(el); });
+    // 섹션별: 숨김 · 폭 · 제목 정렬 · 고정 문구
+    U.order.forEach((id) => {
+      const el = $(`[data-sec="${id}"]`), o = (U.sec[id] = U.sec[id] || {});
+      el.classList.toggle("sec-hidden", !!o.hidden);
+      el.dataset.width = o.width || "";
+      el.dataset.align = o.align || "";
+      const h = $(`[data-head="${id}"]`);
+      if (!h) return;
+      const dft = headDefaults[id] || {};
+      ["idx", "title", "sub"].forEach((k) => { if (o[k] === undefined) o[k] = dft[k] || ""; });
+      if (o.nav === undefined) o.nav = NAV_DEFAULT[id] || "";
+      const P = `ui.sec.${id}`;
+      // 라벨 · 제목 · 설명은 편집 모드에서 ✕로 빼고 + 로 다시 넣을 수 있음 (o.off)
+      const off = o.off || {}, part = (k, html) => (off[k] ? "" : html);
+      h.innerHTML =
+        part("idx", o.idx || ed ? `<span class="sec-idx mono" data-part="idx" ${E(P + ".idx")}>${fmt(o.idx)}</span>` : "") +
+        part("title", id === "about" ? `<h2 id="aboutTitle" data-part="title"></h2>` : `<h2 data-part="title" ${E(P + ".title")}>${fmt(o.title)}</h2>`) +
+        part("sub", o.sub || ed ? `<p class="sec-sub" data-part="sub" ${E(P + ".sub")}>${fmt(o.sub)}</p>` : "");
+    });
+    // 위 메뉴: 순서대로, 숨긴 섹션·이름 빈 메뉴는 빼고
+    $("#topNav").innerHTML = U.order.filter((id) => U.sec[id] && (ed || (!U.sec[id].hidden && plain(U.sec[id].nav).trim())) && id !== "custom" && $(`#${id}`))
+      .map((id) => `<a href="#${id}" ${E(`ui.sec.${id}.nav`)}>${fmt(U.sec[id].nav)}</a>`).join("");
+    // 글꼴 · 본문 크기
+    const F = (U.font = U.font || {});
+    [F.body, F.head, F.label].forEach((n) => n && ensureFont(n));
+    const root = document.documentElement.style;
+    const set = (k, v) => (v ? root.setProperty(k, v) : root.removeProperty(k));
+    set("--font", F.body ? fontStack(F.body) : "");
+    set("--font-head", F.head ? fontStack(F.head) : "");
+    set("--mono", F.label && F.label !== "JetBrains Mono" ? fontStack(F.label, true) : "");
+    set("--ts", F.scale && F.scale !== 1 ? String(F.scale) : "");
+  }
+  PF.applyUI = applyUI;
+
+  /* 슬라이드 넘기기: meta.slideSeconds 초마다, 마우스를 올리면 멈춤 */
+  let scIndex = 0, scTimer = 0, scHold = false;
+  function goSlide(i) {
+    const sc = $("#showcase"), slides = $$(".sc-slide", sc), texts = $$(".sc-text", sc), dots = $$(".sc-dots button", sc);
+    if (!slides.length) return;
+    scIndex = (i + slides.length) % slides.length;
+    slides.forEach((s, k) => { s.classList.toggle("on", k === scIndex); s.tabIndex = k === scIndex ? 0 : -1; });
+    texts.forEach((t, k) => t.classList.toggle("on", k === scIndex));
+    dots.forEach((d, k) => d.setAttribute("aria-selected", k === scIndex));
+  }
+  function restartSlides() {
+    clearInterval(scTimer);
+    const sec = Math.max(2, +D.meta.slideSeconds || 5);
+    $("#showcase").style.setProperty("--sc-sec", sec + "s");
+    if (reduceMotion || $$(".sc-slide").length < 2) return;
+    scTimer = setInterval(() => { if (!scHold && !PF.editing && !document.hidden) goSlide(scIndex + 1); }, sec * 1000);
+  }
+  const scEl = $("#showcase");
+  scEl.addEventListener("mouseenter", () => { scHold = true; scEl.classList.add("hold"); });
+  scEl.addEventListener("mouseleave", () => { scHold = false; scEl.classList.remove("hold"); });
+  scEl.addEventListener("focusin", () => { scHold = true; scEl.classList.add("hold"); });
+  scEl.addEventListener("focusout", () => { scHold = false; scEl.classList.remove("hold"); });
+  scEl.addEventListener("click", (e) => {
+    const d = e.target.closest("[data-sc]");
+    if (d) { e.stopPropagation(); goSlide(+d.dataset.sc); restartSlides(); }
+  });
+  /* 좌우로 넘기기: 화살표 버튼, 끌기(마우스·터치), 트랙패드 가로 스크롤, 키보드 ← → */
+  scEl.addEventListener("click", (e) => {
+    const a = e.target.closest("[data-sc-step]");
+    if (a) { e.stopPropagation(); goSlide(scIndex + +a.dataset.scStep); restartSlides(); }
+  });
+  let drag = null, dragged = false;
+  scEl.addEventListener("dragstart", (e) => { if (e.target.closest(".sc-stage")) e.preventDefault(); });
+  scEl.addEventListener("pointerdown", (e) => {
+    const stage = e.target.closest(".sc-stage");
+    if (!stage || e.button !== 0 || e.target.closest("button, iframe, [data-sc-step]")) return;
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, stage }; dragged = false;
+  });
+  scEl.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x;
+    if (!dragged && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(e.clientY - drag.y)) {
+      dragged = true; scEl.classList.add("dragging");
+      try { drag.stage.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    if (dragged) drag.stage.style.setProperty("--drag", Math.max(-80, Math.min(80, dx * 0.35)) + "px");
+  });
+  const endDrag = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x, stage = drag.stage; drag = null;
+    stage.style.removeProperty("--drag"); scEl.classList.remove("dragging");
+    if (dragged && Math.abs(dx) > 50) { goSlide(scIndex + (dx < 0 ? 1 : -1)); restartSlides(); }
+  };
+  scEl.addEventListener("pointerup", endDrag);
+  scEl.addEventListener("pointercancel", endDrag);
+  // 끌어서 넘겼을 때는 프로젝트 상세가 열리지 않게
+  scEl.addEventListener("click", (e) => { if (dragged) { e.stopPropagation(); e.preventDefault(); dragged = false; } }, true);
+  let wheelLock = 0;
+  scEl.addEventListener("wheel", (e) => {
+    if (Math.abs(e.deltaX) < 30 || Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    if (Date.now() < wheelLock) return;
+    wheelLock = Date.now() + 600;
+    goSlide(scIndex + (e.deltaX > 0 ? 1 : -1)); restartSlides();
+  }, { passive: false });
+  scEl.addEventListener("keydown", (e) => {
+    if (e.target.isContentEditable || !/^Arrow(Left|Right)$/.test(e.key)) return;
+    e.preventDefault();
+    goSlide(scIndex + (e.key === "ArrowRight" ? 1 : -1)); restartSlides();
+    $(".sc-slide.on", scEl)?.focus();
+  });
+
+  /* 대표작 · 카드 클릭 → 상세 */
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-work]");
+    if (t) openWork(+t.dataset.work);
+  });
+  document.addEventListener("keydown", (e) => {
+    const t = e.target.closest && e.target.closest("[data-work]");
+    if (t && e.target === t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openWork(+t.dataset.work); }
+  });
+
+  $("#logFilter").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    $$("#logFilter button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    $$("#logCards [data-genre]").forEach((c) => c.classList.toggle("hide", b.textContent !== "전체" && c.dataset.genre !== b.textContent));
+    glSet(null);
+  });
+
+  /* ---------- 게임 로그: 아이콘 → 정보 카드 (나머지는 어둡게) ---------- */
+  function glPlace(it) {
+    const pop = $(".gl-pop", it), panel = $("#logPanel");
+    if (!pop || !panel) return;
+    const pr = panel.getBoundingClientRect();
+    const w = Math.max(220, Math.min(440, pr.width - 16, innerWidth - 16));
+    pop.style.width = w + "px";
+    pop.style.visibility = "hidden";
+    const a = it.getBoundingClientRect(), h = pop.offsetHeight;
+    const lo = Math.max(8, pr.left + 8), hi = Math.min(innerWidth - 8, pr.right - 8) - w;
+    const L = hi < lo ? lo : Math.min(Math.max(a.left + a.width / 2 - w / 2, lo), hi);
+    const above = a.top - h - 14 >= 8 || a.bottom + h + 14 > innerHeight;
+    pop.dataset.side = above ? "above" : "below";
+    pop.style.left = (L - a.left) + "px";
+    pop.style.top = (above ? -(h + 14) : a.height + 14) + "px";
+    pop.style.setProperty("--ax", Math.min(Math.max(a.left + a.width / 2 - L, 22), w - 22) + "px");
+    pop.style.visibility = "";
+  }
+  function glSet(i) {
+    glOpen = i;
+    const grid = $("#logCards");
+    if (!grid) return;
+    grid.classList.toggle("has-open", i != null);
+    $$(".gl-item", grid).forEach((it) => {
+      const on = +it.dataset.i === i;
+      it.classList.toggle("open", on);
+      $(".gl-icon", it).setAttribute("aria-expanded", on);
+      if (on) glPlace(it);
+    });
+  }
+  /* 편집기(editor.js)도 클릭을 캡처 단계에서 먼저 가로채므로, 같은 단계에서 먼저 등록해 둔다 */
+  addEventListener("click", (e) => {
+    const grid = $("#logCards");
+    if (!grid) return;
+    const t = e.target;
+    const ic = t.closest("#logCards .gl-icon, #logCards .gl-edit");
+    if (ic) {
+      if (PF.editing && ic.classList.contains("gl-icon")) return; // 편집 중 아이콘 클릭 = 그림 바꾸기(✎ 버튼으로 카드 열기)
+      const i = +ic.closest(".gl-item").dataset.i;
+      glSet(glOpen === i ? null : i);
+      return;
+    }
+    if (t.closest("#logCards .ed-ctl")) return glSet(null); // ↑↓✕ 하면 번호가 바뀌니 닫기
+    if (glOpen == null || t.closest("#logCards .gl-pop, .ed-pal, .ed-bar")) return;
+    glSet(null);
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    const ic = e.target.closest && e.target.closest("#logCards .gl-icon");
+    if (ic && !PF.editing && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      const i = +ic.closest(".gl-item").dataset.i;
+      glSet(glOpen === i ? null : i);
+    } else if (e.key === "Escape" && glOpen != null) {
+      const it = $(`#logCards .gl-item[data-i="${glOpen}"] .gl-icon`);
+      glSet(null);
+      if (it && !PF.editing) it.focus();
+    }
+  });
+  addEventListener("resize", () => { if (glOpen != null) glSet(glOpen); });
+
+  /* ---------- 상세 모달 ---------- */
+  const modal = $("#modal");
+  let current = null;
+
+  /* 상세 창 목차: 누르면 그 제목으로 바로 이동 (모바일에서는 접이식) */
+  let tocSpy = null;
+  function buildToc() {
+    const nav = $(".modal-toc", modal);
+    if (!nav) return;
+    const items = [];
+    const tk = $(".modal-tasks", modal);
+    if (tk) items.push({ el: tk, lv: 1, text: tk.querySelector("h4").textContent.trim() || "담당 업무" });
+    const heads = $$(".b-txt:has(> .b-h2), .b-txt:has(> .b-h)", modal).map((box) => ({
+      el: box.querySelector(".b-h2, .b-h"), lv: box.querySelector(".b-h2") ? 1 : 2,
+      text: (box.dataset.toc || "").trim(), full: box.querySelector(".b-h2, .b-h").textContent.trim(),
+    }));
+    const custom = heads.some((x) => x.text);   // 목차 이름을 정해 둔 프로젝트는 그 제목만 목차에
+    heads.forEach((x) => { if (custom ? x.text : x.full) items.push({ el: x.el, lv: custom ? 1 : x.lv, text: custom ? x.text : x.full }); });
+    const list = items.filter((x) => x.text);
+    if (list.length < 2) { nav.hidden = true; return; }
+    nav.hidden = false;
+    nav.classList.remove("open");
+    nav.innerHTML = `<p class="toc-t">목차</p><button type="button" class="toc-toggle" aria-expanded="false"><span class="toc-now"></span><i aria-hidden="true">▾</i></button><div class="toc-list">${list.map((x, i) => `<a href="#" class="toc-a lv${x.lv}" data-i="${i}">${esc(x.text)}</a>`).join("")}</div>`;
+    list.forEach((x) => x.el.classList.add("toc-target"));
+    const links = $$(".toc-a", nav), now = $(".toc-now", nav);
+    nav.onclick = (e) => {
+      if (e.target.closest(".toc-toggle")) { const o = nav.classList.toggle("open"); $(".toc-toggle", nav).setAttribute("aria-expanded", o); return; }
+      const a = e.target.closest(".toc-a");
+      if (!a) return;
+      e.preventDefault(); e.stopPropagation();
+      nav.classList.remove("open"); $(".toc-toggle", nav).setAttribute("aria-expanded", "false");
+      list[+a.dataset.i].el.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    // 지금 읽는 구간 표시 (제목이 화면 위쪽 기준선을 지나면 그 항목)
+    const mark = () => {
+      const line = modal.getBoundingClientRect().top + (matchMedia("(max-width: 960px)").matches ? 110 : 80);
+      let cur = 0;
+      list.forEach((x, i) => { if (x.el.getBoundingClientRect().top <= line) cur = i; });
+      if (modal.scrollTop > 40 && modal.scrollTop + modal.clientHeight >= modal.scrollHeight - 4) cur = list.length - 1;
+      links.forEach((a, i) => a.classList.toggle("on", i === cur));
+      now.textContent = list[cur].text;
+    };
+    if (tocSpy) modal.removeEventListener("scroll", tocSpy);
+    tocSpy = mark; modal.addEventListener("scroll", tocSpy, { passive: true });
+    mark();
+  }
+  function openWork(j, keepScroll) {
+    const w = D.works[j], p = `works.${j}`;
+    if (!w) return modal.close();
+    current = j;
+    const ed = PF.editing;
+    w.blocks = w.blocks || [];
+    w.facts = w.facts || [];
+    w.tasks = w.tasks || [];
+    // 예전 PROBLEM/APPROACH/RESULT 칸 → 이름을 바꾸고 늘릴 수 있는 목록으로
+    if (!w.steps) {
+      w.steps = [["PROBLEM", w.problem], ["APPROACH", w.approach], ["RESULT", w.result]].map(([label, text]) => ({ label, text: text || "" }));
+      delete w.problem; delete w.approach; delete w.result;
+    }
+    const st = modal.scrollTop;
+    // 역할·기간·구성·상태 이름표도 고칠 수 있게 (처음엔 기본 이름을 복사)
+    w.factLabels = Object.assign({ role: "역할", period: "기간", team: "구성", status: "상태" }, w.factLabels || {});
+    const fixed = [["role"], ["period"], ["team"], ["status"]].map(([f]) => [w.factLabels[f], f]).filter(([, f]) => ed || (plain(w[f]).trim() && !hasTodo(w[f])));
+    const show2 = (cond, html) => (cond || ed ? html : "");
+    $("#modalBody").innerHTML = `
+      <div class="modal-media" data-slot="${p}.media"></div>
+      <div class="modal-text">
+        <header class="modal-head">
+          ${show2(w.kind, `<span class="kind-pill" ${E(p + ".kind")}>${fmt(w.kind)}</span>`)}
+          ${show2(ed || plain(viewText(w.genre, ed)).trim(), `<p class="mono modal-genre" ${E(p + ".genre")}>${fmt(viewText(w.genre, ed))}</p>`)}
+          <h2 id="modalTitle" ${E(p + ".title")}>${fmt(w.title)}</h2>
+          ${show2(w.lead, `<p class="modal-lead" ${E(p + ".lead")}>${fmt(w.lead)}</p>`)}
+        </header>
+        <dl class="modal-facts" data-list="${p}.facts">
+          ${fixed.map(([k, f]) => `<div><dt ${E(`${p}.factLabels.${f}`)}>${fmt(k)}</dt><dd ${E(`${p}.${f}`)}>${fmt(w[f])}</dd></div>`).join("")}
+          ${w.facts.map((f, i) => (!ed && (hasTodo(f.label) || hasTodo(f.value)) ? "" : `<div data-item="${p}.facts.${i}"><dt ${E(`${p}.facts.${i}.label`)}>${fmt(f.label)}</dt><dd ${E(`${p}.facts.${i}.value`)}>${fmt(f.value)}</dd></div>`)).join("")}
+        </dl>
+        <div class="modal-cols">
+        <nav class="modal-toc" aria-label="이 페이지 목차" hidden></nav>
+        <div class="modal-main">
+        ${show2(w.steps.length, `<dl class="modal-steps" data-list="${p}.steps">${w.steps.map((s, i) => `
+          <div data-item="${p}.steps.${i}"><dt ${E(`${p}.steps.${i}.label`)}>${fmt(s.label)}</dt><dd class="b-md" data-md ${E(`${p}.steps.${i}.text`)}>${md(s.text)}</dd></div>`).join("")}</dl>`)}
+        ${show2(w.tasks.some((t) => !hasTodo(t)), `<div class="modal-tasks"><h4 ${E(p + ".tasksTitle")}>${fmt(w.tasksTitle || "주요 업무")}</h4><ul class="tasks" data-list="${p}.tasks">${w.tasks.map((t, i) => (!ed && hasTodo(t) ? "" : `<li ${E(`${p}.tasks.${i}`)}>${fmt(t)}</li>`)).join("")}</ul></div>`)}
+        ${show2(w.blocks.length, `<div class="modal-blocks">${ed || plain(w.blocksTitle).trim() ? `<h4 class="mb-title" ${E(p + ".blocksTitle")}>${fmt(w.blocksTitle || "")}</h4>` : ""}${blocks(p + ".blocks")}</div>`)}
+        ${show2(w.links && w.links.length, `<div class="modal-links" data-list="${p}.links">${(w.links || []).map((l, i) => `<a data-item="${p}.links.${i}" ${href(`${p}.links.${i}.url`)} target="_blank" rel="noopener"><span ${E(`${p}.links.${i}.label`)}>${fmt(l.label)}</span> ↗</a>`).join("")}</div>`)}
+        </div>
+        </div>
+      </div>`;
+    fillSlots(modal);
+    // 프로젝트마다 고유 주소 (#work-아이디) — 링크로 바로 열 수 있게
+    if (w.id && location.hash !== "#work-" + w.id) history.replaceState(null, "", "#work-" + w.id);
+    if (!modal.open) modal.showModal();
+    modal.scrollTop = keepScroll ? st : 0;
+    buildToc();   // 창이 열려 크기가 잡힌 뒤에 목차 위치 계산
+    if (!keepScroll) $(".modal-close").focus({ preventScroll: true });
+    if (PF.onRender) PF.onRender();
+  }
+  PF.openWork = openWork;
+  $(".modal-close").addEventListener("click", () => modal.close());
+  modal.addEventListener("click", (e) => { if (e.target === modal) modal.close(); });
+  modal.addEventListener("close", () => {
+    current = null;
+    $$("video", modal).forEach((v) => v.pause());
+    $$("iframe", modal).forEach((f) => f.remove());
+    if (/^#work-/.test(location.hash)) history.replaceState(null, "", location.pathname + location.search);
+  });
+  // 주소에 #work-아이디 가 있으면 그 프로젝트를 바로 열기
+  const openFromHash = () => {
+    const m = location.hash.match(/^#work-(.+)$/);
+    if (!m) return;
+    const j = D.works.findIndex((w) => w.id === decodeURIComponent(m[1]));
+    if (j >= 0 && current !== j) openWork(j);
+  };
+  addEventListener("hashchange", openFromHash);
+
+  /* ---------- 떠다니는 파일 버튼 ---------- */
+  const dock = $("#dock"), dockBtn = $(".dock-btn");
+  const setDock = (open) => { dock.classList.toggle("open", open); dockBtn.setAttribute("aria-expanded", open); };
+  dockBtn.addEventListener("click", (e) => { e.stopPropagation(); setDock(!dock.classList.contains("open")); });
+  document.addEventListener("click", (e) => { if (!dock.contains(e.target)) setDock(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") setDock(false); });
+
+  function onScroll() {
+    const past = window.scrollY > window.innerHeight * 0.6;
+    dock.classList.toggle("on", past && !PF.editing);
+    if (!dock.classList.contains("on")) setDock(false);
+    $(".top").classList.toggle("scrolled", window.scrollY > 10);
+    // 월페이퍼: 스크롤하면 살짝 느리게 따라옴
+    const art = $("#heroArt");
+    if (!reduceMotion && art && window.scrollY < window.innerHeight * 1.2) art.style.setProperty("--py", `${window.scrollY * 0.12}px`);
+  }
+  addEventListener("scroll", onScroll, { passive: true });
+
+  /* ---------- 등장 애니메이션 / 숫자 카운트 / 메뉴 활성화 ---------- */
+  const revIO = new IntersectionObserver((entries) => entries.forEach((e) => {
+    if (!e.isIntersecting) return;
+    e.target.classList.add("in");
+    revIO.unobserve(e.target);
+    const n = $("[data-count]", e.target);
+    if (n) countUp(n);
+  }), { threshold: 0.15 });
+  function observeReveals() {
+    document.documentElement.classList.add("js-reveal");
+    $$(".reveal:not(.in)").forEach((el, i) => {
+      if (PF.editing) return el.classList.add("in");
+      el.style.transitionDelay = (i % 4) * 70 + "ms";
+      revIO.observe(el);
+    });
+  }
+
+  function countUp(el) {
+    const m = el.textContent.match(/^([^\d]*)([\d,.]+)$/);
+    if (!m || reduceMotion || PF.editing) return;
+    const target = parseFloat(m[2].replace(/,/g, "")), dec = (m[2].split(".")[1] || "").length, t0 = performance.now();
+    const step = (t) => {
+      const p = Math.min(1, (t - t0) / 1200), v = target * (1 - Math.pow(1 - p, 3));
+      if (document.activeElement !== el) el.textContent = m[1] + v.toLocaleString("ko-KR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  const secIO = new IntersectionObserver((entries) => entries.forEach((e) => {
+    if (e.isIntersecting) $$(".top-nav a").forEach((a) => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+  }), { rootMargin: "-45% 0px -50% 0px" });
+  $$("main section[id]").forEach((s) => secIO.observe(s));
+
+  /* ---------- 테마 ---------- */
+  const root = document.documentElement;
+  const isDark = () => root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  const label = () => { $(".theme-label").textContent = isDark() ? "DARK" : "LIGHT"; };
+  $(".theme-btn").addEventListener("click", () => {
+    root.dataset.theme = isDark() ? "light" : "dark";
+    try { localStorage.setItem("theme", root.dataset.theme); } catch (e) {}
+    label();
+  });
+  label();
+
+  /* ---------- 이메일 복사 ---------- */
+  const toast = $("#toast");
+  PF.toast = (msg) => {
+    toast.textContent = msg;
+    toast.classList.add("on");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => toast.classList.remove("on"), 2200);
+  };
+  const copyMail = async () => {
+    try { await navigator.clipboard.writeText(plain(D.meta.email)); PF.toast("이메일을 복사했어요"); }
+    catch (e) { PF.toast(plain(D.meta.email)); }
+  };
+  document.addEventListener("click", (e) => { if (!PF.editing && e.target.closest(".copy-mail")) copyMail(); });
+  document.addEventListener("keydown", (e) => { if (!PF.editing && e.key === "Enter" && e.target.closest && e.target.closest(".copy-mail")) copyMail(); });
+
+  render();
+  openFromHash();
+  onScroll();
+})();

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portfolio</title>
+  <meta name="description" content="게임 기획자 포트폴리오">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="styles.css?v=20261110-16">
+  <script>
+    try { var t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+  <a class="skip" href="#projects">본문으로 건너뛰기</a>
+
+  <header class="top">
+    <div class="shell top-inner">
+      <span class="mono" data-bind="year"></span>
+      <a class="top-name" href="#top"><span data-bind="topLabel"></span><br><b data-bind="nameEn"></b></a>
+      <nav class="top-nav" id="topNav" aria-label="주요 메뉴"></nav>
+      <button class="theme-btn" type="button" aria-label="밝은/어두운 화면 전환">
+        <span class="theme-dot"></span><span class="mono theme-label"></span>
+      </button>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- HERO -->
+    <section class="hero">
+      <div class="hero-art" id="heroArt" aria-hidden="true"></div>
+      <div class="hero-in shell">
+        <div class="hero-name">
+          <h1><span data-bind="name"></span> <small data-bind="nameEn"></small></h1>
+          <p class="hero-role" data-bind="role"></p>
+        </div>
+        <!-- 대표 프로젝트 슬라이드: 몇 초마다 넘어가고, 누르면 그 프로젝트 상세가 열림 -->
+        <div class="showcase" id="showcase" aria-roledescription="carousel" aria-label="대표 프로젝트"></div>
+        <!-- 한마디 · 소개 -->
+        <div class="hero-note">
+          <p class="eyebrow mono" data-bind="roleKo"></p>
+          <p class="hero-title" id="headline"></p>
+          <p class="hero-intro" data-bind="intro"></p>
+          <ul class="hero-keywords" id="keywords"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- PROJECTS -->
+    <section class="sec shell" id="projects" data-sec="projects">
+      <div class="sec-head reveal" data-head="projects">
+        <span class="sec-idx mono">01 / Projects</span>
+        <h2>프로젝트</h2>
+      </div>
+      <div class="cards" id="projectCards"></div>
+    </section>
+
+    <!-- 이력 + About Me (같은 칸) -->
+    <section class="sec shell" id="resume" data-sec="resume">
+      <div class="rs-frame">
+        <aside class="rs-card reveal">
+          <div class="sec-head" data-head="resume">
+            <span class="sec-idx mono">02 / Resume</span>
+            <h2>이력</h2>
+          </div>
+          <div class="rs-photo" id="resumePhoto"></div>
+          <div class="rs-id" id="resumeId"></div>
+          <ul class="rs-tags" id="aboutTags"></ul>
+        </aside>
+        <div class="rs-main">
+          <div class="resume" id="resumeList"></div>
+          <div class="about-wrap">
+            <h3 class="about-h" id="aboutTitle"></h3>
+            <div class="about reveal" id="aboutBody"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- GAME LOG -->
+    <section class="sec shell" id="gamelog" data-sec="gamelog">
+      <div class="sec-head reveal" data-head="gamelog">
+        <span class="sec-idx mono">03 / Game Log</span>
+        <h2>게임 로그</h2>
+        <p class="sec-sub">즐겨온 게임과 주요 플레이 기록입니다.</p>
+      </div>
+      <div class="gl-panel reveal" id="logPanel">
+        <div class="chips-filter" id="logFilter" role="group" aria-label="장르 필터"></div>
+        <div class="gl-grid" id="logCards"></div>
+      </div>
+    </section>
+
+    <!-- 자유 섹션 (편집 모드에서 추가) -->
+    <div id="customSections" data-sec="custom"></div>
+    </main>
+
+  <!-- 떠다니는 포트폴리오 파일 -->
+  <div class="dock" id="dock">
+    <button class="dock-btn" type="button" aria-expanded="false" aria-controls="dockTray">
+      <span class="dock-papers" aria-hidden="true"><i></i><i></i></span>
+      <span class="dock-label"><b>포트폴리오 열기</b><small class="mono">2 files</small></span>
+    </button>
+    <div class="dock-tray" id="dockTray" role="dialog" aria-label="포트폴리오 파일"></div>
+  </div>
+
+  <!-- 상세 모달 -->
+  <dialog class="modal" id="modal" aria-labelledby="modalTitle">
+    <div class="modal-bar">
+      <button class="modal-close" type="button" aria-label="닫기" autofocus>✕</button>
+    </div>
+    <div class="modal-inner" id="modalBody"></div>
+  </dialog>
+
+  <div class="toast mono" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    /* 파일을 항상 최신으로 불러오기
+       - content.js: 사이트에서 저장할 때마다 바뀌므로 매번 새로 받음
+       - 나머지: BUILD 값이 바뀔 때만 새로 받음 (예전 파일이 섞여 화면이 비는 것 방지) */
+    (function () {
+      var BUILD = "20261110-16";
+      var editing = /[?&]edit\b/.test(location.search) || /^(localhost|127\.0\.0\.1)$/.test(location.hostname) || location.protocol === "file:";
+      function fail(src) {
+        if (document.querySelector(".load-error")) return;
+        document.body.insertAdjacentHTML("afterbegin", '<p class="load-error">' + src.split("?")[0] + ' 파일을 불러오지 못했어요. 새로고침(Ctrl+F5) 해 주세요.</p>');
+      }
+      function load(src, next) {
+        var s = document.createElement("script");
+        s.src = src;
+        s.onload = next || null;
+        s.onerror = function () { fail(src); };
+        document.body.appendChild(s);
+      }
+      if (editing) {
+        var l = document.createElement("link"); l.rel = "stylesheet"; l.href = "editor.css?v=" + BUILD; document.head.appendChild(l);
+      }
+      // 마크다운 해석기 (못 불러와도 사이트는 동작 — 굵게·코드·링크만 되는 기본 모드)
+      function soft(src, next) { var s = document.createElement("script"); s.src = src; s.onload = next || null; document.body.appendChild(s); }
+      soft("https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js", function () {
+        soft("https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js", function () { if (window.PF && PF.render) PF.render(); });
+      });
+      load("content.js?t=" + Date.now(), function () {
+        load("main.js?v=" + BUILD, function () { if (editing) load("editor.js?v=" + BUILD); });
+      });
+    })();
+  </script>
+</body>
+</html>
