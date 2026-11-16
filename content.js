@@ -20,7 +20,16 @@ window.PORTFOLIO = {
     ],
     "intro": "보드게임의 콘셉트와 규칙을 기획하고\n**제작부터 배송까지 맡아 516명의 후원자에게 전달했습니다.**\n\n「카오스 제로 나이트메어」에서는 \n**캐릭터의 감정을 보여주는 연출을 제안해 반영했습니다.**",
     "links": [],
-    "topLabel": "Portfolio of"
+    "topLabel": "Portfolio of",
+    "heroLayers": [
+      {
+        "src": "assets/mwiwfhlh6nx-23754b1e-1f61-4348-91c5-0059a5.png",
+        "x": 76.24,
+        "y": 68.88,
+        "w": 52,
+        "o": 100
+      }
+    ]
   },
   "glance": [
     {
