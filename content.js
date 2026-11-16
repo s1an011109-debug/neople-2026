@@ -24,9 +24,9 @@ window.PORTFOLIO = {
     "heroLayers": [
       {
         "src": "assets/mwiwfhlh6nx-23754b1e-1f61-4348-91c5-0059a5.png",
-        "x": 76.24,
-        "y": 68.88,
-        "w": 52,
+        "x": 59.92,
+        "y": 66.1,
+        "w": 66,
         "o": 100
       }
     ]
