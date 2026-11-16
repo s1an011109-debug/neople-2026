@@ -11,7 +11,7 @@ window.PORTFOLIO = {
     "nameEn": "Jung Sian",
     "role": "Game Designer",
     "roleKo": "",
-    "heroImage": "assets/mvoxhl71ae7-1161e04c-8088-4c28-9047-e99977.png",
+    "heroImage": "assets/mwiv722a54p-81d9bad9-98fb-b4d8-4f0c-bdb364.jpg",
     "slideSeconds": 5,
     "email": "s1an011109@gmail.com",
     "keywords": [],
@@ -651,8 +651,9 @@ window.PORTFOLIO = {
   "sections": [],
   "layout": {
     "art": {
-      "x": 4.53,
-      "y": 1.44
+      "x": 21.97,
+      "y": 3.22,
+      "z": 0.8
     }
   },
   "about": {
