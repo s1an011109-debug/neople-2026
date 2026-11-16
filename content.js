@@ -651,8 +651,8 @@ window.PORTFOLIO = {
   "sections": [],
   "layout": {
     "art": {
-      "x": 21.97,
-      "y": 3.22,
+      "x": 21.81,
+      "y": 2.26,
       "z": 0.8
     }
   },
